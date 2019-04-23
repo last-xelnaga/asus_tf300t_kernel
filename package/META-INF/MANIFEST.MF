@@ -1,0 +1,5 @@
+Manifest-Version: 1.0
+Created-By: 1.0 (signupdate)
+
+Name: boot.blob
+SHA1-Digest: S0bKKhETkvOktFr3Xf9mcXkHL0Q=

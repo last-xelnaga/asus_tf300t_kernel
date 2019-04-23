@@ -8,12 +8,12 @@ cd ..
 rm boot.img
 ./tools/android-unpackbootimg/mkbootimg --kernel source/arch/arm/boot/zImage --ramdisk ramdisk.gz -o boot.img
 
-#rm boot.blob
-#./tools/tegra3_kernel_blob_creator/kernel_blob_creator -i boot.img -o boot.blob
+rm boot.blob
+./tools/tegra3_kernel_blob_creator/kernel_blob_creator -i boot.img -o boot.blob
 
-#rm package/boot.blob
-#cp boot2.blob package/boot.blob
+rm package/boot.blob
+rm package/package.zip
 
-#cd package
-#rm package.zip
-#zip -r package.zip *
+cp boot.blob package/boot.blob
+cd package
+zip -r package.zip *

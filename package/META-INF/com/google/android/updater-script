@@ -1,0 +1,6 @@
+show_progress(0.500000, 0);
+ui_print("writing kernel...");
+package_extract_file("boot.blob", "/dev/block/mmcblk0p4");
+ui_print("Custom kernel for the tf300t");
+show_progress(0.100000, 0);
+ui_print("done...");
