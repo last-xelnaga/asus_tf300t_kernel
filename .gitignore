@@ -1,4 +1,4 @@
 *.blob
 *.img
-*.gz
+*.lz
 *.zip
