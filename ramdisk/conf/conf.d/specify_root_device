@@ -1,6 +1,6 @@
 #
 # 2014-01-22  by Geometry for tf300t on mmcblk1p1
 
-ROOT="/dev/mmcblk1p1"
+ROOT="/dev/mmcblk0p8"
 ROOTFSTYPE="ext4"
 ROOTFLAGS="-o noatime,nodiratime,barrier=1,nomblk_io_submit,discard,data=ordered,auto_da_alloc"
