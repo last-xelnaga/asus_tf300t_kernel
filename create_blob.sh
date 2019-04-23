@@ -11,6 +11,7 @@ rm boot.img
 rm boot.blob
 ./tools/tegra3_kernel_blob_creator/kernel_blob_creator -i boot.img -o boot.blob
 
+# create package for recovery
 rm package/boot.blob
 rm package/package.zip
 
