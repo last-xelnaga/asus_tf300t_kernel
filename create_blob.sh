@@ -14,7 +14,10 @@ rm boot.blob
 # create package for recovery
 rm package/boot.blob
 rm package/package.zip
+rm package.zip
 
 cp boot.blob package/boot.blob
 cd package
 zip -r package.zip *
+cd ..
+cp package/package.zip package.zip
