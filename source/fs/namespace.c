@@ -31,6 +31,7 @@
 #include <linux/idr.h>
 #include <linux/fs_struct.h>
 #include <linux/fsnotify.h>
+#include <linux/proc_fs.h>
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
 #include "pnode.h"
@@ -1744,7 +1745,7 @@ static int do_change_type(struct path *path, int flag)
 /*
  * do loopback mount.
  */
-static int do_loopback(struct path *path, char *old_name,
+static int do_loopback(struct path *path, const char *old_name,
 				int recurse)
 {
 	LIST_HEAD(umount_list);
@@ -1864,7 +1865,7 @@ static inline int tree_contains_unbindable(struct vfsmount *mnt)
 	return 0;
 }
 
-static int do_move_mount(struct path *path, char *old_name)
+static int do_move_mount(struct path *path, const char *old_name)
 {
 	struct path old_path, parent_path;
 	struct vfsmount *p;
@@ -2010,8 +2011,8 @@ unlock:
  * create a new mount for userspace and request it to be added into the
  * namespace's tree
  */
-static int do_new_mount(struct path *path, char *type, int flags,
-			int mnt_flags, char *name, void *data)
+static int do_new_mount(struct path *path, const char *type, int flags,
+			int mnt_flags, const char *name, void *data)
 {
 	struct vfsmount *mnt;
 	int err;
@@ -2030,6 +2031,13 @@ static int do_new_mount(struct path *path, char *type, int flags,
 	err = do_add_mount(mnt, path, mnt_flags);
 	if (err)
 		mntput(mnt);
+#ifdef CONFIG_ASYNC_FSYNC
+	if (!err && ((!strcmp(type, "ext4") &&
+	    !strcmp(path->dentry->d_name.name, "data")) ||
+	    (!strcmp(type, "fuse") &&
+	    !strcmp(path->dentry->d_name.name, "emulated"))))
+                mnt->mnt_sb->fsync_flags |= FLAG_ASYNC_FSYNC;
+#endif
 	return err;
 }
 
@@ -2283,8 +2291,8 @@ int copy_mount_string(const void __user *data, char **where)
  * Therefore, if this magic number is present, it carries no information
  * and must be discarded.
  */
-long do_mount(char *dev_name, char *dir_name, char *type_page,
-		  unsigned long flags, void *data_page)
+long do_mount(const char *dev_name, const char *dir_name,
+		const char *type_page, unsigned long flags, void *data_page)
 {
 	struct path path;
 	int retval = 0;
@@ -2301,6 +2309,36 @@ long do_mount(char *dev_name, char *dir_name, char *type_page,
 
 	if (data_page)
 		((char *)data_page)[PAGE_SIZE - 1] = 0;
+
+#ifdef CONFIG_RESTRICT_ROOTFS_SLAVE
+	/* Check if this is an attempt to mark "/" as recursive-slave. */
+	if (strcmp(dir_name, "/") == 0 && flags == (MS_SLAVE | MS_REC)) {
+		static const char storage[] = "/storage";
+		static const char source[]  = "/mnt/shell/emulated";
+		long res;
+
+		/* Mark /storage as recursive-slave instead. */
+		if ((res = do_mount(NULL, (char *)storage, NULL, (MS_SLAVE | MS_REC), NULL)) == 0) {
+			/* Unfortunately bind mounts from outside /storage may retain the
+			 * recursive-shared property (bug?).  This means any additional
+			 * namespace-specific bind mounts (e.g., /storage/emulated/0/Android/obb)
+			 * will also appear, shared in all namespaces, at their respective source
+			 * paths (e.g., /mnt/shell/emulated/0/Android/obb), possibly leading to
+			 * hundreds of /proc/mounts-visible bind mounts.  As a workaround, mark
+			 * /mnt/shell/emulated also as recursive-slave so that subsequent bind
+			 * mounts are confined to their namespaces. */
+			if ((res = do_mount(NULL, (char *)source, NULL, (MS_SLAVE | MS_REC), NULL)) == 0)
+				/* Both paths successfully marked as slave, leave the rest of the
+				 * filesystem hierarchy alone. */
+				return 0;
+			else
+				pr_warn("Failed to mount %s as MS_SLAVE: %ld\n", source, res);
+		} else {
+			pr_warn("Failed to mount %s as MS_SLAVE: %ld\n", storage, res);
+		}
+		/* Fallback: Mark rootfs as recursive-slave as requested. */
+	}
+#endif
 
 	/* ... and get the mountpoint */
 	retval = kern_path(dir_name, LOOKUP_FOLLOW, &path);
@@ -2716,6 +2754,59 @@ void put_mnt_ns(struct mnt_namespace *ns)
 	kfree(ns);
 }
 EXPORT_SYMBOL(put_mnt_ns);
+
+static void *mntns_get(struct task_struct *task)
+{
+   struct mnt_namespace *ns;
+   rcu_read_lock();
+   ns = task->nsproxy->mnt_ns;
+   get_mnt_ns(ns);
+   rcu_read_unlock();
+   return ns;
+}
+
+static void mntns_put(void *ns)
+{
+   put_mnt_ns(ns);
+}
+
+static int mntns_install(struct nsproxy *nsproxy, void *ns)
+{
+   struct fs_struct *fs = current->fs;
+   struct mnt_namespace *mnt_ns = ns;
+   struct path root;
+
+   if (fs->users != 1)
+       return -EINVAL;
+
+   get_mnt_ns(mnt_ns);
+   put_mnt_ns(nsproxy->mnt_ns);
+   nsproxy->mnt_ns = mnt_ns;
+
+   /* Find the root */
+   root.mnt    = mnt_ns->root;
+   root.dentry = mnt_ns->root->mnt_root;
+   path_get(&root);
+   while(d_mountpoint(root.dentry) && follow_down(&root));
+
+   /* Update the pwd and root */
+   path_get(&root);
+   path_get(&root);
+   path_put(&fs->root);
+   path_put(&fs->pwd);
+   fs->root = root;
+   fs->pwd  = root;
+   path_put(&root);
+
+   return 0;
+}
+
+const struct proc_ns_operations mntns_operations = {
+   .name       = "mnt",
+   .get        = mntns_get,
+   .put        = mntns_put,
+   .install    = mntns_install,
+};
 
 struct vfsmount *kern_mount_data(struct file_system_type *type, void *data)
 {

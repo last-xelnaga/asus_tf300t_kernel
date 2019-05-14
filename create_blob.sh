@@ -1,17 +1,17 @@
 #!/bin/bash
 
-#rm ramdisk.lz
+rm ramdisk.lz
 rm ramdisk.gz
 cd ramdisk
 
-#find . ! -name . | cpio -o -H newc | xz -6 --format=lzma > ../ramdisk.lz
-find . ! -name . | cpio -o -H newc | gzip > ../ramdisk.gz
+find . ! -name . | cpio -o -H newc | xz -6 --format=lzma > ../ramdisk.lz
+#find . ! -name . | cpio -o -H newc | gzip > ../ramdisk.gz
 
 cd ..
 
 rm boot.img
-#./tools/mkbootimg/mkbootimg --kernel source/arch/arm/boot/zImage --ramdisk ramdisk.lz -o boot.img
-./tools/mkbootimg/mkbootimg --kernel source/arch/arm/boot/zImage --ramdisk ramdisk.gz -o boot.img
+./tools/mkbootimg/mkbootimg --kernel source/arch/arm/boot/zImage --ramdisk ramdisk.lz -o boot.img
+#./tools/mkbootimg/mkbootimg --kernel source/arch/arm/boot/zImage --ramdisk ramdisk.gz -o boot.img
 
 rm boot.blob
 ./tools/tegra3_kernel_blob_creator/kernel_blob_creator -i boot.img -o boot.blob

@@ -24,6 +24,7 @@
 
 #include <linux/pm.h>
 #include <linux/types.h>
+#include <linux/fb.h>
 #include <drm/drm_fixed.h>
 
 #define TEGRA_MAX_DC		2
@@ -279,6 +280,13 @@ struct tegra_dc_sd_agg_priorities {
 	u8 agg[4];
 };
 
+struct tegra_dc_sd_window {
+	u16 h_position;
+	u16 v_position;
+	u16 h_size;
+	u16 v_size;
+};
+
 struct tegra_dc_sd_settings {
 	unsigned enable;
 	bool use_auto_pwm;
@@ -287,6 +295,7 @@ struct tegra_dc_sd_settings {
 	short bin_width;
 	u8 phase_in_settings;
 	u8 phase_in_adjustments;
+	u8 panel_min_brightness;
 	u8 cmd;
 	u8 final_agg;
 	u16 cur_agg_step;
@@ -298,6 +307,22 @@ struct tegra_dc_sd_settings {
 
 	bool use_vid_luma;
 	struct tegra_dc_sd_rgb coeff;
+
+	bool k_limit_enable;
+	u16 k_limit;
+
+	bool sd_window_enable;
+	struct tegra_dc_sd_window sd_window;
+
+	bool soft_clipping_enable;
+	u8 soft_clipping_threshold;
+
+	bool smooth_k_enable;
+	u16 smooth_k_incr;
+
+	bool sd_proc_control;
+	bool soft_clipping_correction;
+	bool use_vpulse2;
 
 	struct tegra_dc_sd_fc fc;
 	struct tegra_dc_sd_blp blp;
@@ -368,6 +393,8 @@ struct tegra_dc_out {
 
 	u8			*out_sel_configs;
 	unsigned		n_out_sel_configs;
+	bool			user_needs_vblank;
+	struct completion	user_vblank_comp;
 
 	int	(*enable)(void);
 	int	(*postpoweron)(void);
@@ -514,6 +541,10 @@ struct tegra_dc_platform_data {
 	unsigned long		emc_clk_rate;
 	struct tegra_dc_out	*default_out;
 	struct tegra_fb_data	*fb;
+	unsigned long		min_emc_clk_rate; /* used to make sure
+	                                           * emc clock rate is enough
+	                                           * during DC is enabled
+	                                           */
 };
 
 #define TEGRA_DC_FLAG_ENABLED		(1 << 0)
@@ -525,6 +556,8 @@ bool tegra_dc_get_connected(struct tegra_dc *);
 bool tegra_dc_hpd(struct tegra_dc *dc);
 
 
+void tegra_dc_get_fbvblank(struct tegra_dc *dc, struct fb_vblank *vblank);
+int tegra_dc_wait_for_vsync(struct tegra_dc *dc);
 void tegra_dc_blank(struct tegra_dc *dc);
 
 void tegra_dc_enable(struct tegra_dc *dc);
@@ -539,6 +572,9 @@ void tegra_dc_incr_syncpt_min(struct tegra_dc *dc, int i, u32 val);
  */
 int tegra_dc_update_windows(struct tegra_dc_win *windows[], int n);
 int tegra_dc_sync_windows(struct tegra_dc_win *windows[], int n);
+int tegra_dc_config_frame_end_intr(struct tegra_dc *dc, bool enable);
+bool tegra_dc_is_within_n_vsync(struct tegra_dc *dc, s64 ts);
+bool tegra_dc_does_vsync_separate(struct tegra_dc *dc, s64 new_ts, s64 old_ts);
 
 int tegra_dc_set_mode(struct tegra_dc *dc, const struct tegra_dc_mode *mode);
 struct fb_videomode;
@@ -583,5 +619,9 @@ struct tegra_dc_edid {
 };
 struct tegra_dc_edid *tegra_dc_get_edid(struct tegra_dc *dc);
 void tegra_dc_put_edid(struct tegra_dc_edid *edid);
+
+int tegra_dc_set_flip_callback(void (*callback)(void));
+int tegra_dc_unset_flip_callback(void);
+int tegra_dc_get_panel_sync_rate(void);
 
 #endif

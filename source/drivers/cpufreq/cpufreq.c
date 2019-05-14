@@ -69,7 +69,7 @@ static DEFINE_PER_CPU(int, cpufreq_policy_cpu);
 static DEFINE_PER_CPU(struct rw_semaphore, cpu_policy_rwsem);
 
 #define lock_policy_rwsem(mode, cpu)					\
-static int lock_policy_rwsem_##mode					\
+int lock_policy_rwsem_##mode					\
 (int cpu)								\
 {									\
 	int policy_cpu = per_cpu(cpufreq_policy_cpu, cpu);		\
@@ -87,14 +87,14 @@ lock_policy_rwsem(read, cpu);
 
 lock_policy_rwsem(write, cpu);
 
-static void unlock_policy_rwsem_read(int cpu)
+void unlock_policy_rwsem_read(int cpu)
 {
 	int policy_cpu = per_cpu(cpufreq_policy_cpu, cpu);
 	BUG_ON(policy_cpu == -1);
 	up_read(&per_cpu(cpu_policy_rwsem, policy_cpu));
 }
 
-static void unlock_policy_rwsem_write(int cpu)
+void unlock_policy_rwsem_write(int cpu)
 {
 	int policy_cpu = per_cpu(cpufreq_policy_cpu, cpu);
 	BUG_ON(policy_cpu == -1);
@@ -596,6 +596,70 @@ static ssize_t show_bios_limit(struct cpufreq_policy *policy, char *buf)
 	return sprintf(buf, "%u\n", policy->cpuinfo.max_freq);
 }
 
+#ifdef CONFIG_VOLTAGE_CONTROL
+/*
+ * Tegra3 voltage control via cpufreq by Paul Reioux (faux123)
+ * inspired by Michael Huang's voltage control code for OMAP44xx
+ */
+
+#include "../../arch/arm/mach-tegra/dvfs.h"
+#include "../../arch/arm/mach-tegra/clock.h"
+
+extern int user_mv_table[MAX_DVFS_FREQS];
+
+static ssize_t show_UV_mV_table(struct cpufreq_policy *policy, char *buf)
+{
+	int i = 0;
+	char *out = buf;
+	struct clk *cpu_clk_g = tegra_get_clock_by_name("cpu_g");
+
+	/* find how many actual entries there are */
+	i = cpu_clk_g->dvfs->num_freqs;
+
+	for(i--; i >=0; i--) {
+		out += sprintf(out, "%lumhz: %i mV\n",
+				cpu_clk_g->dvfs->freqs[i]/1000000,
+				cpu_clk_g->dvfs->millivolts[i]);
+	}
+
+	return out - buf;
+}
+
+static ssize_t store_UV_mV_table(struct cpufreq_policy *policy, char *buf, size_t count)
+{
+	int i = 0;
+	unsigned long volt_cur;
+	int ret;
+	char size_cur[16];
+
+	struct clk *cpu_clk_g = tegra_get_clock_by_name("cpu_g");
+
+	/* find how many actual entries there are */
+	i = cpu_clk_g->dvfs->num_freqs;
+
+	for(i--; i >= 0; i--) {
+
+		if(cpu_clk_g->dvfs->freqs[i]/1000000 != 0) {
+			ret = sscanf(buf, "%lu", &volt_cur);
+			if (ret != 1)
+				return -EINVAL;
+
+			/* TODO: need some robustness checks */
+			user_mv_table[i] = volt_cur;
+			pr_info("user mv tbl[%i]: %lu\n", i, volt_cur);
+
+			/* Non-standard sysfs interface: advance buf */
+			ret = sscanf(buf, "%s", size_cur);
+			buf += (strlen(size_cur)+1);
+		}
+	}
+	/* update dvfs table here */
+	cpu_clk_g->dvfs->millivolts = user_mv_table;
+
+	return count;
+}
+#endif
+
 cpufreq_freq_attr_ro_perm(cpuinfo_cur_freq, 0400);
 cpufreq_freq_attr_ro(cpuinfo_min_freq);
 cpufreq_freq_attr_ro(cpuinfo_max_freq);
@@ -613,6 +677,9 @@ cpufreq_freq_attr_rw(scaling_setspeed);
 cpufreq_freq_attr_ro(policy_min_freq);
 cpufreq_freq_attr_ro(policy_max_freq);
 cpufreq_freq_attr_rw(dvfs_test);
+#ifdef CONFIG_VOLTAGE_CONTROL
+cpufreq_freq_attr_rw(UV_mV_table);
+#endif
 
 static struct attribute *default_attrs[] = {
 	&cpuinfo_min_freq.attr,
@@ -629,6 +696,9 @@ static struct attribute *default_attrs[] = {
 	&policy_min_freq.attr,
 	&policy_max_freq.attr,
 	&dvfs_test.attr,
+#ifdef CONFIG_VOLTAGE_CONTROL
+	&UV_mV_table.attr,
+#endif
 	NULL
 };
 
@@ -976,7 +1046,7 @@ static int cpufreq_add_dev(struct sys_device *sys_dev)
 		goto err_unlock_policy;
 	}
 	policy->user_policy.min = policy->min;
-	policy->user_policy.max = policy->max;
+	policy->user_policy.max = 1500000; //policy->max;
 
 	blocking_notifier_call_chain(&cpufreq_policy_notifier_list,
 				     CPUFREQ_START, policy);
@@ -1827,7 +1897,7 @@ int cpufreq_set_gov(char *target_gov, unsigned int cpu)
 	if (target_gov == NULL)
 		return -EINVAL;
 
-	/* Get current governer */
+	/* Get current governor */
 	cur_policy = cpufreq_cpu_get(cpu);
 	if (!cur_policy)
 		return -EINVAL;
@@ -1876,6 +1946,52 @@ err_out:
 	return ret;
 }
 EXPORT_SYMBOL(cpufreq_set_gov);
+
+/*
+ *	cpufreq_current_gov - return current governor for the cpu
+ *	@cpu: CPU whose governor needs to be changed
+ *	@buf: buffer for current governor
+ */
+ssize_t cpufreq_current_gov(char *buf, unsigned int cpu)
+{
+	int ret = 0;
+	struct cpufreq_policy *policy;
+
+	if (cpu >= nr_cpu_ids)
+		return -EINVAL;
+
+	/* Get current governor */
+	policy = cpufreq_cpu_get(cpu);
+	if (!policy)
+		return -EINVAL;
+
+	if (lock_policy_rwsem_read(policy->cpu) < 0) {
+		ret = -EINVAL;
+		goto err_out;
+	}
+
+	if (policy->policy == CPUFREQ_POLICY_POWERSAVE) {
+		ret = sprintf(buf, "powersave\n");
+	} else if (policy->policy == CPUFREQ_POLICY_PERFORMANCE) {
+		ret = sprintf(buf, "performance\n");
+	} else if (policy->governor) {
+		ret = scnprintf(buf, CPUFREQ_NAME_LEN, "%s",
+				policy->governor->name);
+	} else {
+		/* No gov set for this online cpu.
+		 * If we are here, require serious
+		 * debugging hence setting as pr_error.
+		 */
+		pr_err("No gov for online cpu:%d\n", cpu);
+		ret = -EINVAL;
+	}
+	unlock_policy_rwsem_read(policy->cpu);
+err_out:
+	cpufreq_cpu_put(policy);
+	return ret;
+
+}
+EXPORT_SYMBOL(cpufreq_current_gov);
 
 static int __cpuinit cpufreq_cpu_callback(struct notifier_block *nfb,
 					unsigned long action, void *hcpu)

@@ -30,8 +30,11 @@
 #include <linux/sched.h>
 #include <linux/wait.h>
 #include <linux/atomic.h>
+#include <linux/dma-buf.h>
 #include <linux/nvmap.h>
 #include "nvmap_heap.h"
+#include <linux/workqueue.h>
+#include <asm/tlbflush.h>
 
 struct nvmap_device;
 struct page;
@@ -54,6 +57,19 @@ void _nvmap_handle_free(struct nvmap_handle *h);
 
 #define nvmap_ref_to_id(_ref)		((unsigned long)(_ref)->handle)
 
+/*
+ *
+ */
+struct nvmap_deferred_ops {
+	struct list_head ops_list;
+	spinlock_t deferred_ops_lock;
+	bool enable_deferred_cache_maintenance;
+	u64 deferred_maint_inner_requested;
+	u64 deferred_maint_inner_flushed;
+	u64 deferred_maint_outer_requested;
+	u64 deferred_maint_outer_flushed;
+};
+
 /* handles allocated using shared system memory (either IOVMM- or high-order
  * page allocations */
 struct nvmap_pgalloc {
@@ -69,12 +85,22 @@ struct nvmap_handle {
 	struct rb_node node;	/* entry on global handle tree */
 	atomic_t ref;		/* reference count (i.e., # of duplications) */
 	atomic_t pin;		/* pin count */
-	unsigned int usecount;	/* how often is used */
+#ifdef CONFIG_NVMAP_CARVEOUT_COMPACTOR
+	atomic_t usecount;	/* holds map count on carveout handle and is
+					used to avoid relocation during
+					carveout compaction */
+#endif
 	unsigned long flags;
 	size_t size;		/* padded (as-allocated) size */
 	size_t orig_size;	/* original (as-requested) size */
 	size_t align;
 	struct nvmap_client *owner;
+	struct nvmap_handle_ref *owner_ref; /* use this ref to avoid spending
+			time on validation in some cases.
+			if handle was duplicated by other client and
+			original client destroy ref, this field
+			has to be set to zero. In this case ref should be
+			obtained through validation */
 	struct nvmap_device *dev;
 	union {
 		struct nvmap_pgalloc pgalloc;
@@ -213,6 +239,8 @@ pte_t **nvmap_alloc_pte_irq(struct nvmap_device *dev, void **vaddr);
 
 void nvmap_free_pte(struct nvmap_device *dev, pte_t **pte);
 
+pte_t **nvmap_vaddr_to_pte(struct nvmap_device *dev, unsigned long vaddr);
+
 void nvmap_usecount_inc(struct nvmap_handle *h);
 void nvmap_usecount_dec(struct nvmap_handle *h);
 
@@ -232,6 +260,16 @@ void nvmap_carveout_commit_subtract(struct nvmap_client *client,
 				    size_t len);
 
 struct nvmap_share *nvmap_get_share_from_dev(struct nvmap_device *dev);
+
+
+void nvmap_cache_maint_ops_flush(struct nvmap_device *dev,
+		struct nvmap_handle *h);
+
+struct nvmap_deferred_ops *nvmap_get_deferred_ops_from_dev(
+		struct nvmap_device *dev);
+
+int nvmap_find_cache_maint_op(struct nvmap_device *dev,
+		struct nvmap_handle *h);
 
 struct nvmap_handle *nvmap_validate_get(struct nvmap_client *client,
 					unsigned long handle);
@@ -267,5 +305,14 @@ struct nvmap_handle_ref *nvmap_alloc_iovm(struct nvmap_client *client,
 	size_t size, size_t align, unsigned int flags, unsigned int iova_start);
 
 void nvmap_free_iovm(struct nvmap_client *client, struct nvmap_handle_ref *r);
+
+static inline void nvmap_flush_tlb_kernel_page(unsigned long kaddr)
+{
+#ifdef CONFIG_ARM_ERRATA_798181
+	flush_tlb_kernel_page_skip_errata_798181(kaddr);
+#else
+	flush_tlb_kernel_page(kaddr);
+#endif
+}
 
 #endif /* __VIDEO_TEGRA_NVMAP_NVMAP_H */

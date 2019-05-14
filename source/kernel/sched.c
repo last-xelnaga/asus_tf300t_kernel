@@ -36,6 +36,7 @@
 #include <linux/interrupt.h>
 #include <linux/capability.h>
 #include <linux/completion.h>
+#include <linux/cpufreq.h>
 #include <linux/kernel_stat.h>
 #include <linux/debug_locks.h>
 #include <linux/perf_event.h>
@@ -640,14 +641,18 @@ static inline struct task_group *task_group(struct task_struct *p)
 /* Change a task's cfs_rq and parent entity if it moves across CPUs/groups */
 static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
 {
+#if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_RT_GROUP_SCHED)
+	struct task_group *tg = task_group(p);
+#endif
+
 #ifdef CONFIG_FAIR_GROUP_SCHED
-	p->se.cfs_rq = task_group(p)->cfs_rq[cpu];
-	p->se.parent = task_group(p)->se[cpu];
+	p->se.cfs_rq = tg->cfs_rq[cpu];
+	p->se.parent = tg->se[cpu];
 #endif
 
 #ifdef CONFIG_RT_GROUP_SCHED
-	p->rt.rt_rq  = task_group(p)->rt_rq[cpu];
-	p->rt.parent = task_group(p)->rt_se[cpu];
+	p->rt.rt_rq  = tg->rt_rq[cpu];
+	p->rt.parent = tg->rt_se[cpu];
 #endif
 }
 
@@ -3819,6 +3824,9 @@ void account_user_time(struct task_struct *p, cputime_t cputime,
 	cpuacct_update_stats(p, CPUACCT_STAT_USER, cputime);
 	/* Account for user time used */
 	acct_update_integrals(p);
+
+	/* Account power usage for user time */
+	acct_update_power(p, cputime);
 }
 
 /*
@@ -3875,6 +3883,9 @@ void __account_system_time(struct task_struct *p, cputime_t cputime,
 
 	/* Account for system time used */
 	acct_update_integrals(p);
+
+	/* Account power usage for system time */
+	acct_update_power(p, cputime);
 }
 
 /*
@@ -4267,10 +4278,6 @@ static noinline void __schedule_bug(struct task_struct *prev)
 		show_regs(regs);
 	else
 		dump_stack();
-#ifdef CONFIG_DEBUG_ASUS
-	//Force system hang for debugging under SMP
-	BUG_ON(1);
-#endif
 }
 
 /*
@@ -4285,6 +4292,7 @@ static inline void schedule_debug(struct task_struct *prev)
 	 */
 	if (unlikely(in_atomic_preempt_off() && !prev->exit_state))
 		__schedule_bug(prev);
+	rcu_sleep_check();
 
 	profile_hit(SCHED_PROFILING, __builtin_return_address(0));
 
@@ -5481,7 +5489,7 @@ long sched_setaffinity(pid_t pid, const struct cpumask *in_mask)
 		goto out_free_cpus_allowed;
 	}
 	retval = -EPERM;
-	if (!check_same_owner(p) && !task_ns_capable(p, CAP_SYS_NICE))
+	if (!check_same_owner(p) && !ns_capable(task_user_ns(p), CAP_SYS_NICE))
 		goto out_unlock;
 
 	retval = security_task_setscheduler(p);
@@ -8293,6 +8301,7 @@ void __might_sleep(const char *file, int line, int preempt_offset)
 {
 	static unsigned long prev_jiffy;	/* ratelimiting */
 
+	rcu_sleep_check(); /* WARN_ON_ONCE() by default, no rate limit reqd. */
 	if ((preempt_count_equals(preempt_offset) && !irqs_disabled()) ||
 	    oops_in_progress)
 		return;

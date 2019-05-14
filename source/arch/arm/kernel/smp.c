@@ -121,7 +121,7 @@ int __cpuinit __cpu_up(unsigned int cpu)
 		 * CPU was successfully started, wait for it
 		 * to come online or time out.
 		 */
-		timeout = jiffies + 10*HZ;
+		timeout = jiffies + HZ;
 		while (time_before(jiffies, timeout)) {
 			if (cpu_online(cpu))
 				break;
@@ -215,7 +215,7 @@ void __cpu_die(unsigned int cpu)
 		pr_err("CPU%u: cpu didn't die\n", cpu);
 		return;
 	}
-	printk(KERN_NOTICE "CPU%u: shutdown\n", cpu);
+	//printk(KERN_NOTICE "CPU%u: shutdown\n", cpu);
 
 	if (!platform_cpu_kill(cpu))
 		printk("CPU%u: unable to kill\n", cpu);
@@ -279,6 +279,10 @@ asmlinkage void __cpuinit secondary_start_kernel(void)
 {
 	struct mm_struct *mm = &init_mm;
 	unsigned int cpu = smp_processor_id();
+
+
+	//printk("CPU%u: Booted secondary processor\n", cpu);
+
 
 	/*
 	 * All kernel threads share the same mm context; grab a
